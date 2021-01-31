@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * advansys.c - Linux Host Driver for AdvanSys SCSI Adapters
  *
@@ -6,11 +7,6 @@
  * Copyright (c) 2007 Matthew Wilcox <matthew@wil.cx>
  * Copyright (c) 2014 Hannes Reinecke <hare@suse.de>
  * All Rights Reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 /*
@@ -320,7 +316,7 @@ typedef struct asc_sg_head {
 	ushort queue_cnt;
 	ushort entry_to_copy;
 	ushort res;
-	ASC_SG_LIST sg_list[0];
+	ASC_SG_LIST sg_list[];
 } ASC_SG_HEAD;
 
 typedef struct asc_scsi_q {
@@ -2416,8 +2412,8 @@ static void asc_prt_scsi_host(struct Scsi_Host *s)
 	struct asc_board *boardp = shost_priv(s);
 
 	printk("Scsi_Host at addr 0x%p, device %s\n", s, dev_name(boardp->dev));
-	printk(" host_busy %u, host_no %d,\n",
-	       atomic_read(&s->host_busy), s->host_no);
+	printk(" host_busy %d, host_no %d,\n",
+	       scsi_host_busy(s), s->host_no);
 
 	printk(" base 0x%lx, io_port 0x%lx, irq %d,\n",
 	       (ulong)s->base, (ulong)s->io_port, boardp->irq);
@@ -2880,15 +2876,15 @@ static int asc_get_eeprom_string(ushort *serialnum, uchar *cp)
 static void asc_prt_asc_board_eeprom(struct seq_file *m, struct Scsi_Host *shost)
 {
 	struct asc_board *boardp = shost_priv(shost);
-	ASC_DVC_VAR *asc_dvc_varp;
 	ASCEEP_CONFIG *ep;
 	int i;
-#ifdef CONFIG_ISA
-	int isa_dma_speed[] = { 10, 8, 7, 6, 5, 4, 3, 2 };
-#endif /* CONFIG_ISA */
 	uchar serialstr[13];
+#ifdef CONFIG_ISA
+	ASC_DVC_VAR *asc_dvc_varp;
+	int isa_dma_speed[] = { 10, 8, 7, 6, 5, 4, 3, 2 };
 
 	asc_dvc_varp = &boardp->dvc_var.asc_dvc_var;
+#endif /* CONFIG_ISA */
 	ep = &boardp->eep_config.asc_eep;
 
 	seq_printf(m,
@@ -3175,15 +3171,14 @@ static void asc_prt_adv_board_eeprom(struct seq_file *m, struct Scsi_Host *shost
 static void asc_prt_driver_conf(struct seq_file *m, struct Scsi_Host *shost)
 {
 	struct asc_board *boardp = shost_priv(shost);
-	int chip_scsi_id;
 
 	seq_printf(m,
 		"\nLinux Driver Configuration and Information for AdvanSys SCSI Host %d:\n",
 		shost->host_no);
 
 	seq_printf(m,
-		   " host_busy %u, max_id %u, max_lun %llu, max_channel %u\n",
-		   atomic_read(&shost->host_busy), shost->max_id,
+		   " host_busy %d, max_id %u, max_lun %llu, max_channel %u\n",
+		   scsi_host_busy(shost), shost->max_id,
 		   shost->max_lun, shost->max_channel);
 
 	seq_printf(m,
@@ -3192,8 +3187,8 @@ static void asc_prt_driver_conf(struct seq_file *m, struct Scsi_Host *shost)
 		   shost->sg_tablesize, shost->cmd_per_lun);
 
 	seq_printf(m,
-		   " unchecked_isa_dma %d, use_clustering %d\n",
-		   shost->unchecked_isa_dma, shost->use_clustering);
+		   " unchecked_isa_dma %d\n",
+		   shost->unchecked_isa_dma);
 
 	seq_printf(m,
 		   " flags 0x%x, last_reset 0x%lx, jiffies 0x%lx, asc_n_io_port 0x%x\n",
@@ -3201,12 +3196,6 @@ static void asc_prt_driver_conf(struct seq_file *m, struct Scsi_Host *shost)
 		   boardp->asc_n_io_port);
 
 	seq_printf(m, " io_port 0x%lx\n", shost->io_port);
-
-	if (ASC_NARROW_BOARD(boardp)) {
-		chip_scsi_id = boardp->dvc_cfg.asc_dvc_cfg.chip_scsi_id;
-	} else {
-		chip_scsi_id = boardp->dvc_var.adv_dvc_var.chip_scsi_id;
-	}
 }
 
 /*
@@ -5949,7 +5938,6 @@ static void adv_async_callback(ADV_DVC_VAR *adv_dvc_varp, uchar code)
 static void adv_isr_callback(ADV_DVC_VAR *adv_dvc_varp, ADV_SCSI_REQ_Q *scsiqp)
 {
 	struct asc_board *boardp = adv_dvc_varp->drv_ptr;
-	u32 srb_tag;
 	adv_req_t *reqp;
 	adv_sgblk_t *sgblkp;
 	struct scsi_cmnd *scp;
@@ -5965,7 +5953,6 @@ static void adv_isr_callback(ADV_DVC_VAR *adv_dvc_varp, ADV_SCSI_REQ_Q *scsiqp)
 	 * completed. The adv_req_t structure actually contains the
 	 * completed ADV_SCSI_REQ_Q structure.
 	 */
-	srb_tag = le32_to_cpu(scsiqp->srb_tag);
 	scp = scsi_host_find_tag(boardp->shost, scsiqp->srb_tag);
 
 	ASC_DBG(1, "scp 0x%p\n", scp);
@@ -6117,7 +6104,6 @@ static int AdvISR(ADV_DVC_VAR *asc_dvc)
 {
 	AdvPortAddr iop_base;
 	uchar int_stat;
-	ushort target_bit;
 	ADV_CARR_T *free_carrp;
 	__le32 irq_next_vpa;
 	ADV_SCSI_REQ_Q *scsiq;
@@ -6203,8 +6189,6 @@ static int AdvISR(ADV_DVC_VAR *asc_dvc)
 		free_carrp->next_vpa = asc_dvc->carr_freelist->carr_va;
 		asc_dvc->carr_freelist = free_carrp;
 		asc_dvc->carr_pending_cnt--;
-
-		target_bit = ADV_TID_TO_TIDMASK(scsiq->target_id);
 
 		/*
 		 * Clear request microcode control flag.
@@ -6448,7 +6432,7 @@ static void AscIsrChipHalted(ASC_DVC_VAR *asc_dvc)
 				sdtr_data =
 				    AscCalSDTRData(asc_dvc, ext_msg.xfer_period,
 						   ext_msg.req_ack_offset);
-				if ((sdtr_data == 0xFF)) {
+				if (sdtr_data == 0xFF) {
 
 					q_cntl |= QC_MSG_OUT;
 					asc_dvc->init_sdtr &= ~target_id;
@@ -7716,7 +7700,7 @@ adv_get_sglist(struct asc_board *boardp, adv_req_t *reqp,
 				sg_block->sg_ptr = 0L; /* Last ADV_SG_BLOCK in list. */
 				return ADV_SUCCESS;
 			}
-			slp++;
+			slp = sg_next(slp);
 		}
 		sg_block->sg_cnt = NO_OF_SG_PER_BLOCK;
 		prev_sg_block = sg_block;
@@ -8466,7 +8450,7 @@ static int AdvExeScsiQueue(ADV_DVC_VAR *asc_dvc, adv_req_t *reqp)
 }
 
 /*
- * Execute a single 'Scsi_Cmnd'.
+ * Execute a single 'struct scsi_cmnd'.
  */
 static int asc_execute_scsi_cmnd(struct scsi_cmnd *scp)
 {
@@ -10810,14 +10794,6 @@ static struct scsi_host_template advansys_template = {
 	 * for non-ISA adapters.
 	 */
 	.unchecked_isa_dma = true,
-	/*
-	 * All adapters controlled by this driver are capable of large
-	 * scatter-gather lists. According to the mid-level SCSI documentation
-	 * this obviates any performance gain provided by setting
-	 * 'use_clustering'. But empirically while CPU utilization is increased
-	 * by enabling clustering, I/O throughput increases as well.
-	 */
-	.use_clustering = ENABLE_CLUSTERING,
 };
 
 static int advansys_wide_init_chip(struct Scsi_Host *shost)

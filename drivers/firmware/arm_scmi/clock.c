@@ -5,6 +5,8 @@
  * Copyright (C) 2018 ARM Ltd.
  */
 
+#include <linux/sort.h>
+
 #include "common.h"
 
 enum scmi_clock_protocol_cmd {
@@ -56,7 +58,7 @@ struct scmi_msg_resp_clock_describe_rates {
 struct scmi_clock_set_rate {
 	__le32 flags;
 #define CLOCK_SET_ASYNC		BIT(0)
-#define CLOCK_SET_DELAYED	BIT(1)
+#define CLOCK_SET_IGNORE_RESP	BIT(1)
 #define CLOCK_SET_ROUND_UP	BIT(2)
 #define CLOCK_SET_ROUND_AUTO	BIT(3)
 	__le32 id;
@@ -65,8 +67,10 @@ struct scmi_clock_set_rate {
 };
 
 struct clock_info {
+	u32 version;
 	int num_clocks;
 	int max_async_req;
+	atomic_t cur_async_req;
 	struct scmi_clock_info *clk;
 };
 
@@ -77,7 +81,7 @@ static int scmi_clock_protocol_attributes_get(const struct scmi_handle *handle,
 	struct scmi_xfer *t;
 	struct scmi_msg_resp_clock_protocol_attributes *attr;
 
-	ret = scmi_one_xfer_init(handle, PROTOCOL_ATTRIBUTES,
+	ret = scmi_xfer_get_init(handle, PROTOCOL_ATTRIBUTES,
 				 SCMI_PROTOCOL_CLOCK, 0, sizeof(*attr), &t);
 	if (ret)
 		return ret;
@@ -90,7 +94,7 @@ static int scmi_clock_protocol_attributes_get(const struct scmi_handle *handle,
 		ci->max_async_req = attr->max_async_req;
 	}
 
-	scmi_one_xfer_put(handle, t);
+	scmi_xfer_put(handle, t);
 	return ret;
 }
 
@@ -101,29 +105,41 @@ static int scmi_clock_attributes_get(const struct scmi_handle *handle,
 	struct scmi_xfer *t;
 	struct scmi_msg_resp_clock_attributes *attr;
 
-	ret = scmi_one_xfer_init(handle, CLOCK_ATTRIBUTES, SCMI_PROTOCOL_CLOCK,
+	ret = scmi_xfer_get_init(handle, CLOCK_ATTRIBUTES, SCMI_PROTOCOL_CLOCK,
 				 sizeof(clk_id), sizeof(*attr), &t);
 	if (ret)
 		return ret;
 
-	*(__le32 *)t->tx.buf = cpu_to_le32(clk_id);
+	put_unaligned_le32(clk_id, t->tx.buf);
 	attr = t->rx.buf;
 
 	ret = scmi_do_xfer(handle, t);
 	if (!ret)
-		memcpy(clk->name, attr->name, SCMI_MAX_STR_SIZE);
+		strlcpy(clk->name, attr->name, SCMI_MAX_STR_SIZE);
 	else
 		clk->name[0] = '\0';
 
-	scmi_one_xfer_put(handle, t);
+	scmi_xfer_put(handle, t);
 	return ret;
+}
+
+static int rate_cmp_func(const void *_r1, const void *_r2)
+{
+	const u64 *r1 = _r1, *r2 = _r2;
+
+	if (*r1 < *r2)
+		return -1;
+	else if (*r1 == *r2)
+		return 0;
+	else
+		return 1;
 }
 
 static int
 scmi_clock_describe_rates_get(const struct scmi_handle *handle, u32 clk_id,
 			      struct scmi_clock_info *clk)
 {
-	u64 *rate;
+	u64 *rate = NULL;
 	int ret, cnt;
 	bool rate_discrete = false;
 	u32 tot_rate_cnt = 0, rates_flag;
@@ -132,7 +148,7 @@ scmi_clock_describe_rates_get(const struct scmi_handle *handle, u32 clk_id,
 	struct scmi_msg_clock_describe_rates *clk_desc;
 	struct scmi_msg_resp_clock_describe_rates *rlist;
 
-	ret = scmi_one_xfer_init(handle, CLOCK_DESCRIBE_RATES,
+	ret = scmi_xfer_get_init(handle, CLOCK_DESCRIBE_RATES,
 				 SCMI_PROTOCOL_CLOCK, sizeof(*clk_desc), 0, &t);
 	if (ret)
 		return ret;
@@ -176,17 +192,23 @@ scmi_clock_describe_rates_get(const struct scmi_handle *handle, u32 clk_id,
 		}
 
 		tot_rate_cnt += num_returned;
+
+		scmi_reset_rx_to_maxsz(handle, t);
 		/*
 		 * check for both returned and remaining to avoid infinite
 		 * loop due to buggy firmware
 		 */
 	} while (num_returned && num_remaining);
 
-	if (rate_discrete)
+	if (rate_discrete && rate) {
 		clk->list.num_rates = tot_rate_cnt;
+		sort(rate, tot_rate_cnt, sizeof(*rate), rate_cmp_func, NULL);
+	}
+
+	clk->rate_discrete = rate_discrete;
 
 err:
-	scmi_one_xfer_put(handle, t);
+	scmi_xfer_put(handle, t);
 	return ret;
 }
 
@@ -196,46 +218,54 @@ scmi_clock_rate_get(const struct scmi_handle *handle, u32 clk_id, u64 *value)
 	int ret;
 	struct scmi_xfer *t;
 
-	ret = scmi_one_xfer_init(handle, CLOCK_RATE_GET, SCMI_PROTOCOL_CLOCK,
+	ret = scmi_xfer_get_init(handle, CLOCK_RATE_GET, SCMI_PROTOCOL_CLOCK,
 				 sizeof(__le32), sizeof(u64), &t);
 	if (ret)
 		return ret;
 
-	*(__le32 *)t->tx.buf = cpu_to_le32(clk_id);
+	put_unaligned_le32(clk_id, t->tx.buf);
 
 	ret = scmi_do_xfer(handle, t);
-	if (!ret) {
-		__le32 *pval = t->rx.buf;
+	if (!ret)
+		*value = get_unaligned_le64(t->rx.buf);
 
-		*value = le32_to_cpu(*pval);
-		*value |= (u64)le32_to_cpu(*(pval + 1)) << 32;
-	}
-
-	scmi_one_xfer_put(handle, t);
+	scmi_xfer_put(handle, t);
 	return ret;
 }
 
 static int scmi_clock_rate_set(const struct scmi_handle *handle, u32 clk_id,
-			       u32 config, u64 rate)
+			       u64 rate)
 {
 	int ret;
+	u32 flags = 0;
 	struct scmi_xfer *t;
 	struct scmi_clock_set_rate *cfg;
+	struct clock_info *ci = handle->clk_priv;
 
-	ret = scmi_one_xfer_init(handle, CLOCK_RATE_SET, SCMI_PROTOCOL_CLOCK,
+	ret = scmi_xfer_get_init(handle, CLOCK_RATE_SET, SCMI_PROTOCOL_CLOCK,
 				 sizeof(*cfg), 0, &t);
 	if (ret)
 		return ret;
 
+	if (ci->max_async_req &&
+	    atomic_inc_return(&ci->cur_async_req) < ci->max_async_req)
+		flags |= CLOCK_SET_ASYNC;
+
 	cfg = t->tx.buf;
-	cfg->flags = cpu_to_le32(config);
+	cfg->flags = cpu_to_le32(flags);
 	cfg->id = cpu_to_le32(clk_id);
 	cfg->value_low = cpu_to_le32(rate & 0xffffffff);
 	cfg->value_high = cpu_to_le32(rate >> 32);
 
-	ret = scmi_do_xfer(handle, t);
+	if (flags & CLOCK_SET_ASYNC)
+		ret = scmi_do_xfer_with_response(handle, t);
+	else
+		ret = scmi_do_xfer(handle, t);
 
-	scmi_one_xfer_put(handle, t);
+	if (ci->max_async_req)
+		atomic_dec(&ci->cur_async_req);
+
+	scmi_xfer_put(handle, t);
 	return ret;
 }
 
@@ -246,7 +276,7 @@ scmi_clock_config_set(const struct scmi_handle *handle, u32 clk_id, u32 config)
 	struct scmi_xfer *t;
 	struct scmi_clock_set_config *cfg;
 
-	ret = scmi_one_xfer_init(handle, CLOCK_CONFIG_SET, SCMI_PROTOCOL_CLOCK,
+	ret = scmi_xfer_get_init(handle, CLOCK_CONFIG_SET, SCMI_PROTOCOL_CLOCK,
 				 sizeof(*cfg), 0, &t);
 	if (ret)
 		return ret;
@@ -257,7 +287,7 @@ scmi_clock_config_set(const struct scmi_handle *handle, u32 clk_id, u32 config)
 
 	ret = scmi_do_xfer(handle, t);
 
-	scmi_one_xfer_put(handle, t);
+	scmi_xfer_put(handle, t);
 	return ret;
 }
 
@@ -284,13 +314,13 @@ scmi_clock_info_get(const struct scmi_handle *handle, u32 clk_id)
 	struct clock_info *ci = handle->clk_priv;
 	struct scmi_clock_info *clk = ci->clk + clk_id;
 
-	if (!clk->name || !clk->name[0])
+	if (!clk->name[0])
 		return NULL;
 
 	return clk;
 }
 
-static struct scmi_clk_ops clk_ops = {
+static const struct scmi_clk_ops clk_ops = {
 	.count_get = scmi_clock_count_get,
 	.info_get = scmi_clock_info_get,
 	.rate_get = scmi_clock_rate_get,
@@ -329,15 +359,11 @@ static int scmi_clock_protocol_init(struct scmi_handle *handle)
 			scmi_clock_describe_rates_get(handle, clkid, clk);
 	}
 
+	cinfo->version = version;
 	handle->clk_ops = &clk_ops;
 	handle->clk_priv = cinfo;
 
 	return 0;
 }
 
-static int __init scmi_clock_init(void)
-{
-	return scmi_protocol_register(SCMI_PROTOCOL_CLOCK,
-				      &scmi_clock_protocol_init);
-}
-subsys_initcall(scmi_clock_init);
+DEFINE_SCMI_PROTOCOL_REGISTER_UNREGISTER(SCMI_PROTOCOL_CLOCK, clock)

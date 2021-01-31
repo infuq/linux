@@ -1,4 +1,4 @@
-// SPDX-Licence-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0
 /*
  * STMicroelectronics STM32 USB PHY Controller driver
  *
@@ -71,7 +71,6 @@ struct stm32_usbphyc {
 	struct stm32_usbphyc_phy **phys;
 	int nphys;
 	int switch_setup;
-	bool pll_enabled;
 };
 
 static inline void stm32_usbphyc_set_bits(void __iomem *reg, u32 bits)
@@ -84,7 +83,8 @@ static inline void stm32_usbphyc_clr_bits(void __iomem *reg, u32 bits)
 	writel_relaxed(readl_relaxed(reg) & ~bits, reg);
 }
 
-static void stm32_usbphyc_get_pll_params(u32 clk_rate, struct pll_params *pll_params)
+static void stm32_usbphyc_get_pll_params(u32 clk_rate,
+					 struct pll_params *pll_params)
 {
 	unsigned long long fvco, ndiv, frac;
 
@@ -271,7 +271,6 @@ static struct phy *stm32_usbphyc_of_xlate(struct device *dev,
 	struct stm32_usbphyc *usbphyc = dev_get_drvdata(dev);
 	struct stm32_usbphyc_phy *usbphyc_phy = NULL;
 	struct device_node *phynode = args->np;
-
 	int port = 0;
 
 	for (port = 0; port < usbphyc->nphys; port++) {
@@ -312,7 +311,6 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
 	struct stm32_usbphyc *usbphyc;
 	struct device *dev = &pdev->dev;
 	struct device_node *child, *np = dev->of_node;
-	struct resource *res;
 	struct phy_provider *phy_provider;
 	u32 version;
 	int ret, port = 0;
@@ -323,17 +321,13 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
 	usbphyc->dev = dev;
 	dev_set_drvdata(dev, usbphyc);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	usbphyc->base = devm_ioremap_resource(dev, res);
+	usbphyc->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(usbphyc->base))
 		return PTR_ERR(usbphyc->base);
 
-	usbphyc->clk = devm_clk_get(dev, 0);
-	if (IS_ERR(usbphyc->clk)) {
-		ret = PTR_ERR(usbphyc->clk);
-		dev_err(dev, "clk get failed: %d\n", ret);
-		return ret;
-	}
+	usbphyc->clk = devm_clk_get(dev, NULL);
+	if (IS_ERR(usbphyc->clk))
+		return dev_err_probe(dev, PTR_ERR(usbphyc->clk), "clk get_failed\n");
 
 	ret = clk_prepare_enable(usbphyc->clk);
 	if (ret) {
@@ -341,11 +335,15 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	usbphyc->rst = devm_reset_control_get(dev, 0);
+	usbphyc->rst = devm_reset_control_get(dev, NULL);
 	if (!IS_ERR(usbphyc->rst)) {
 		reset_control_assert(usbphyc->rst);
 		udelay(2);
 		reset_control_deassert(usbphyc->rst);
+	} else {
+		ret = PTR_ERR(usbphyc->rst);
+		if (ret == -EPROBE_DEFER)
+			goto clk_disable;
 	}
 
 	usbphyc->switch_setup = -EINVAL;
@@ -367,8 +365,8 @@ static int stm32_usbphyc_probe(struct platform_device *pdev)
 		if (IS_ERR(phy)) {
 			ret = PTR_ERR(phy);
 			if (ret != -EPROBE_DEFER)
-				dev_err(dev,
-					"failed to create phy%d: %d\n", i, ret);
+				dev_err(dev, "failed to create phy%d: %d\n",
+					port, ret);
 			goto put_child;
 		}
 

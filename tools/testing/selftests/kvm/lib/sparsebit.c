@@ -1,10 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Sparse bit array
  *
  * Copyright (C) 2018, Google LLC.
  * Copyright (C) 2018, Red Hat, Inc. (code style cleanup and fuzzing driver)
- *
- * This work is licensed under the terms of the GNU GPL, version 2.
  *
  * This library provides functions to support a memory efficient bit array,
  * with an index size of 2^64.  A sparsebit array is allocated through
@@ -121,7 +120,7 @@
  *     avoided by moving the setting of the nodes mask bits into
  *     the previous nodes num_after setting.
  *
- *   + Node starting index is evenly divisable by the number of bits
+ *   + Node starting index is evenly divisible by the number of bits
  *     within a nodes mask member.
  *
  *   + Nodes never represent a range of bits that wrap around the
@@ -1741,7 +1740,7 @@ void sparsebit_validate_internal(struct sparsebit *s)
 
 		/* Validate node index is divisible by the mask size */
 		if (nodep->idx % MASK_BITS) {
-			fprintf(stderr, "Node index not divisable by "
+			fprintf(stderr, "Node index not divisible by "
 				"mask size,\n"
 				"  nodep: %p nodep->idx: 0x%lx "
 				"MASK_BITS: %lu\n",

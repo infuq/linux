@@ -1,18 +1,14 @@
-/*
- * ak4613.c  --  Asahi Kasei ALSA Soc Audio driver
- *
- * Copyright (C) 2015 Renesas Electronics Corporation
- * Kuninori Morimoto <kuninori.morimoto.gx@renesas.com>
- *
- * Based on ak4642.c by Kuninori Morimoto
- * Based on wm8731.c by Richard Purdie
- * Based on ak4535.c by Richard Purdie
- * Based on wm8753.c by Liam Girdwood
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- */
+// SPDX-License-Identifier: GPL-2.0
+//
+// ak4613.c  --  Asahi Kasei ALSA Soc Audio driver
+//
+// Copyright (C) 2015 Renesas Electronics Corporation
+// Kuninori Morimoto <kuninori.morimoto.gx@renesas.com>
+//
+// Based on ak4642.c by Kuninori Morimoto
+// Based on wm8731.c by Richard Purdie
+// Based on ak4535.c by Richard Purdie
+// Based on wm8753.c by Liam Girdwood
 
 #include <linux/clk.h>
 #include <linux/delay.h>
@@ -455,13 +451,13 @@ static int ak4613_set_bias_level(struct snd_soc_component *component,
 	switch (level) {
 	case SND_SOC_BIAS_ON:
 		mgmt1 |= RSTN;
-		/* fall through */
+		fallthrough;
 	case SND_SOC_BIAS_PREPARE:
 		mgmt1 |= PMADC | PMDAC;
-		/* fall through */
+		fallthrough;
 	case SND_SOC_BIAS_STANDBY:
 		mgmt1 |= PMVR;
-		/* fall through */
+		fallthrough;
 	case SND_SOC_BIAS_OFF:
 	default:
 		break;
@@ -494,8 +490,8 @@ static void ak4613_dummy_write(struct work_struct *work)
 	 */
 	udelay(5000000 / priv->rate);
 
-	snd_soc_component_read(component, PW_MGMT1, &mgmt1);
-	snd_soc_component_read(component, PW_MGMT3, &mgmt3);
+	mgmt1 = snd_soc_component_read(component, PW_MGMT1);
+	mgmt3 = snd_soc_component_read(component, PW_MGMT3);
 
 	snd_soc_component_write(component, PW_MGMT1, mgmt1);
 	snd_soc_component_write(component, PW_MGMT3, mgmt3);
